@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QInputDialog,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMessageBox,
     QSpinBox,
@@ -20,7 +21,7 @@ from PySide6.QtWidgets import (
 from controls_manager import ControlsManager
 from editor_service import DoomEditorService
 from map_canvas import MapCanvas
-from models import Thing
+from models import Linedef, SectorDef, Sidedef, Thing
 from thingnames import thing_name_for
 
 
@@ -41,9 +42,10 @@ class MainWindow(QMainWindow):
         self.actions_by_control_id: dict[str, QAction] = {}
         self.setCentralWidget(self.canvas)
         self.canvas.sector_selected.connect(self.edit_sector)
+        self.canvas.sector_texture_requested.connect(self.edit_sector)
         self.canvas.thing_selected.connect(self.edit_thing)
         self.canvas.linedef_selected.connect(self.edit_linedef)
-        self.canvas.linedef_texture_requested.connect(self.show_linedef_textures)
+        self.canvas.linedef_texture_requested.connect(self.edit_linedef)
         self.canvas.thing_create_requested.connect(self.add_thing_at)
         self.canvas.mode_changed.connect(self.update_mode_status_label)
         self.controls_manager.binding_changed.connect(self.refresh_bound_action)
@@ -175,6 +177,12 @@ class MainWindow(QMainWindow):
         tag_spin.setValue(sector_def.tag)
         form_layout.addRow("Tag", tag_spin)
 
+        floor_flat_edit = QLineEdit(sector_def.floor_texture, dialog)
+        form_layout.addRow("Floor Flat", floor_flat_edit)
+
+        ceiling_flat_edit = QLineEdit(sector_def.ceiling_texture, dialog)
+        form_layout.addRow("Ceiling Flat", ceiling_flat_edit)
+
         layout.addLayout(form_layout)
 
         button_box = QDialogButtonBox(
@@ -193,6 +201,9 @@ class MainWindow(QMainWindow):
         sector_def.light_level = light_spin.value()
         sector_def.special_type = special_spin.value()
         sector_def.tag = tag_spin.value()
+        sector_def.floor_texture = self.normalize_texture_name(floor_flat_edit.text())
+        sector_def.ceiling_texture = self.normalize_texture_name(ceiling_flat_edit.text())
+        self.canvas.flat_brush_cache.clear()
         self.canvas.update()
 
     def edit_thing(self, thing_index: int) -> None:
@@ -389,6 +400,10 @@ class MainWindow(QMainWindow):
             return
 
         linedef = self.canvas.map.linedefs[linedef_index]
+        front_index = self.ensure_linedef_sidedef(linedef, is_front=True)
+        back_index = self.ensure_linedef_sidedef(linedef, is_front=False)
+        front_sidedef = self.canvas.map.sidedefs[front_index]
+        back_sidedef = self.canvas.map.sidedefs[back_index]
 
         dialog = QDialog(self)
         dialog.setWindowTitle(f"Edit Linedef {linedef_index}")
@@ -426,13 +441,31 @@ class MainWindow(QMainWindow):
 
         front_spin = QSpinBox(dialog)
         front_spin.setRange(-1, sidedef_max)
-        front_spin.setValue(min(max(linedef.front_sidedef, -1), sidedef_max))
+        front_spin.setValue(min(max(front_index, -1), sidedef_max))
         form_layout.addRow("Front Sidedef", front_spin)
 
         back_spin = QSpinBox(dialog)
         back_spin.setRange(-1, sidedef_max)
-        back_spin.setValue(min(max(linedef.back_sidedef, -1), sidedef_max))
+        back_spin.setValue(min(max(back_index, -1), sidedef_max))
         form_layout.addRow("Back Sidedef", back_spin)
+
+        front_upper_edit = QLineEdit(front_sidedef.upper_texture, dialog)
+        form_layout.addRow("Front Upper Texture", front_upper_edit)
+
+        front_middle_edit = QLineEdit(front_sidedef.middle_texture, dialog)
+        form_layout.addRow("Front Middle Texture", front_middle_edit)
+
+        front_lower_edit = QLineEdit(front_sidedef.lower_texture, dialog)
+        form_layout.addRow("Front Lower Texture", front_lower_edit)
+
+        back_upper_edit = QLineEdit(back_sidedef.upper_texture, dialog)
+        form_layout.addRow("Back Upper Texture", back_upper_edit)
+
+        back_middle_edit = QLineEdit(back_sidedef.middle_texture, dialog)
+        form_layout.addRow("Back Middle Texture", back_middle_edit)
+
+        back_lower_edit = QLineEdit(back_sidedef.lower_texture, dialog)
+        form_layout.addRow("Back Lower Texture", back_lower_edit)
 
         layout.addLayout(form_layout)
 
@@ -454,38 +487,61 @@ class MainWindow(QMainWindow):
         linedef.tag = tag_spin.value()
         linedef.front_sidedef = front_spin.value()
         linedef.back_sidedef = back_spin.value()
+
+        if 0 <= linedef.front_sidedef < len(self.canvas.map.sidedefs):
+            front_sidedef = self.canvas.map.sidedefs[linedef.front_sidedef]
+            front_sidedef.upper_texture = self.normalize_texture_name(front_upper_edit.text())
+            front_sidedef.middle_texture = self.normalize_texture_name(front_middle_edit.text())
+            front_sidedef.lower_texture = self.normalize_texture_name(front_lower_edit.text())
+
+        if 0 <= linedef.back_sidedef < len(self.canvas.map.sidedefs):
+            back_sidedef = self.canvas.map.sidedefs[linedef.back_sidedef]
+            back_sidedef.upper_texture = self.normalize_texture_name(back_upper_edit.text())
+            back_sidedef.middle_texture = self.normalize_texture_name(back_middle_edit.text())
+            back_sidedef.lower_texture = self.normalize_texture_name(back_lower_edit.text())
         self.canvas.update()
 
-    def show_linedef_textures(self, linedef_index: int) -> None:
+    def normalize_texture_name(self, value: str) -> str:
+        normalized = value.strip().upper()
+        if not normalized:
+            return "-"
+        return normalized[:8]
+
+    def ensure_linedef_sidedef(self, linedef: Linedef, *, is_front: bool) -> int:
         if self.canvas.map is None:
-            return
-        if linedef_index < 0 or linedef_index >= len(self.canvas.map.linedefs):
-            return
+            return -1
 
-        linedef = self.canvas.map.linedefs[linedef_index]
-        front_desc = self.format_sidedef_textures(linedef.front_sidedef)
-        back_desc = self.format_sidedef_textures(linedef.back_sidedef)
+        sidedef_index = linedef.front_sidedef if is_front else linedef.back_sidedef
+        if sidedef_index >= 0 and sidedef_index < len(self.canvas.map.sidedefs):
+            return sidedef_index
 
-        QMessageBox.information(
-            self,
-            f"Linedef {linedef_index} Textures",
-            f"Front sidedef ({linedef.front_sidedef}):\n{front_desc}\n\n"
-            f"Back sidedef ({linedef.back_sidedef}):\n{back_desc}",
+        sector_index = 0
+        opposite_index = linedef.back_sidedef if is_front else linedef.front_sidedef
+        if 0 <= opposite_index < len(self.canvas.map.sidedefs):
+            sector_index = self.canvas.map.sidedefs[opposite_index].sector_index
+        if sector_index < 0 or sector_index >= len(self.canvas.map.sector_defs):
+            sector_index = 0
+
+        if not self.canvas.map.sector_defs:
+            self.canvas.map.sector_defs.append(SectorDef())
+            sector_index = 0
+
+        self.canvas.map.sidedefs.append(
+            Sidedef(
+                x_offset=0,
+                y_offset=0,
+                upper_texture="-",
+                lower_texture="-",
+                middle_texture="-",
+                sector_index=sector_index,
+            )
         )
-
-    def format_sidedef_textures(self, sidedef_index: int) -> str:
-        if self.canvas.map is None:
-            return "(no map)"
-        if sidedef_index < 0:
-            return "(none)"
-        if sidedef_index >= len(self.canvas.map.sidedefs):
-            return "(invalid sidedef index)"
-
-        sidedef = self.canvas.map.sidedefs[sidedef_index]
-        upper = sidedef.upper_texture or "-"
-        middle = sidedef.middle_texture or "-"
-        lower = sidedef.lower_texture or "-"
-        return f"Upper: {upper}\nMiddle: {middle}\nLower: {lower}"
+        new_index = len(self.canvas.map.sidedefs) - 1
+        if is_front:
+            linedef.front_sidedef = new_index
+        else:
+            linedef.back_sidedef = new_index
+        return new_index
 
     def update_loaded_status_label(self) -> None:
         wad_name = "(none)"

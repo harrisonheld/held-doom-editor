@@ -29,6 +29,7 @@ class EditMode(Enum):
 
 class MapCanvas(QWidget):
     sector_selected = Signal(int)
+    sector_texture_requested = Signal(int)
     thing_selected = Signal(int)
     linedef_selected = Signal(int)
     linedef_texture_requested = Signal(int)
@@ -548,8 +549,15 @@ class MapCanvas(QWidget):
         if self.controls_manager.matches_mouse("sector_draw_click", event.button()):
             point = self.nearest_grid_point(event.position().x(), event.position().y())
             if self.mode == EditMode.SECTOR:
-                if not self.try_close_sector(point):
-                    self.pending_polygon.append(point)
+                if self.pending_polygon:
+                    if not self.try_close_sector(point):
+                        self.pending_polygon.append(point)
+                else:
+                    sector_index = self.find_sector_at(event.position().x(), event.position().y())
+                    if sector_index is not None:
+                        self.sector_texture_requested.emit(sector_index)
+                    else:
+                        self.pending_polygon.append(point)
             elif self.mode == EditMode.THING:
                 self.thing_create_requested.emit(point[0], point[1])
             elif self.mode == EditMode.LINE:
