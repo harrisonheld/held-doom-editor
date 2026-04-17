@@ -1,7 +1,7 @@
 import struct
 from collections import defaultdict
 
-from models import DoomMap, Linedef, LumpEntry, Sector, SectorInfo, Vertex
+from models import DoomMap, Linedef, LumpEntry, SectorDef, SectorRegion, Sidedef, Vertex
 
 
 class WadArchive:
@@ -63,9 +63,9 @@ class DoomMapParser:
         doom_map = DoomMap()
         self._load_vertexes(needed, doom_map)
         self._load_linedefs(needed, doom_map)
-        sidedef_sector_indices = self._load_sidedef_sector_indices(needed)
-        sector_infos = self._load_sector_infos(needed)
-        self._build_sectors(doom_map, sidedef_sector_indices, sector_infos)
+        self._load_sidedefs(needed, doom_map)
+        self._load_sector_defs(needed, doom_map)
+        self._build_sector_regions(doom_map)
         return doom_map
 
     def _load_vertexes(self, needed: dict[str, LumpEntry], doom_map: DoomMap) -> None:
@@ -88,64 +88,72 @@ class DoomMapParser:
             values = struct.unpack("<hhhhhhh", raw[i : i + 14])
             doom_map.linedefs.append(Linedef(*values))
 
-    def _load_sidedef_sector_indices(self, needed: dict[str, LumpEntry]) -> list[int]:
+    def _load_sidedefs(self, needed: dict[str, LumpEntry], doom_map: DoomMap) -> None:
         lump = needed.get("SIDEDEFS")
         if lump is None:
-            return []
+            return
 
         raw = self.wad_archive.data[lump.offset : lump.offset + lump.size]
-        indices: list[int] = []
         for i in range(0, len(raw), 30):
-            _, _, _, _, _, sector_index = struct.unpack("<hh8s8s8sh", raw[i : i + 30])
-            indices.append(sector_index)
-        return indices
+            x_offset, y_offset, upper, lower, middle, sector_index = struct.unpack(
+                "<hh8s8s8sh", raw[i : i + 30]
+            )
+            doom_map.sidedefs.append(
+                Sidedef(
+                    x_offset=x_offset,
+                    y_offset=y_offset,
+                    upper_texture=upper.rstrip(b"\0").decode("ascii", errors="ignore"),
+                    lower_texture=lower.rstrip(b"\0").decode("ascii", errors="ignore"),
+                    middle_texture=middle.rstrip(b"\0").decode("ascii", errors="ignore"),
+                    sector_index=sector_index,
+                )
+            )
 
-    def _load_sector_infos(self, needed: dict[str, LumpEntry]) -> list[SectorInfo]:
+    def _load_sector_defs(self, needed: dict[str, LumpEntry], doom_map: DoomMap) -> None:
         lump = needed.get("SECTORS")
         if lump is None:
-            return []
+            return
 
         raw = self.wad_archive.data[lump.offset : lump.offset + lump.size]
-        sectors: list[SectorInfo] = []
         for i in range(0, len(raw), 26):
-            floor, ceiling, _, _, light, _, tag = struct.unpack("<hh8s8shhh", raw[i : i + 26])
-            sectors.append(
-                SectorInfo(
+            floor, ceiling, floor_tex, ceil_tex, light, special, tag = struct.unpack(
+                "<hh8s8shhh", raw[i : i + 26]
+            )
+            doom_map.sector_defs.append(
+                SectorDef(
                     floor_height=floor,
                     ceiling_height=ceiling,
+                    floor_texture=floor_tex.rstrip(b"\0").decode("ascii", errors="ignore"),
+                    ceiling_texture=ceil_tex.rstrip(b"\0").decode("ascii", errors="ignore"),
                     light_level=light,
+                    special_type=special,
                     tag=tag,
                 )
             )
-        return sectors
 
-    def _build_sectors(
-        self,
-        doom_map: DoomMap,
-        sidedef_sector_indices: list[int],
-        sector_infos: list[SectorInfo],
-    ) -> None:
+    def _build_sector_regions(self, doom_map: DoomMap) -> None:
         edges_by_sector: dict[int, list[tuple[int, int]]] = defaultdict(list)
 
         for linedef in doom_map.linedefs:
-            if 0 <= linedef.right < len(sidedef_sector_indices):
-                sector_index = sidedef_sector_indices[linedef.right]
+            if 0 <= linedef.front_sidedef < len(doom_map.sidedefs):
+                sector_index = doom_map.sidedefs[linedef.front_sidedef].sector_index
                 if sector_index >= 0:
                     edges_by_sector[sector_index].append((linedef.v1, linedef.v2))
 
-            if 0 <= linedef.left < len(sidedef_sector_indices):
-                sector_index = sidedef_sector_indices[linedef.left]
+            if 0 <= linedef.back_sidedef < len(doom_map.sidedefs):
+                sector_index = doom_map.sidedefs[linedef.back_sidedef].sector_index
                 if sector_index >= 0:
                     edges_by_sector[sector_index].append((linedef.v2, linedef.v1))
 
-        for sector_index, info in enumerate(sector_infos):
+        for sector_index in range(len(doom_map.sector_defs)):
             loops = self._build_loops(edges_by_sector.get(sector_index, []))
             if not loops:
-                doom_map.sectors.append(Sector(vertex_indices=[], info=info))
                 continue
 
             best_loop = max(loops, key=lambda loop: abs(self._loop_area(doom_map, loop)))
-            doom_map.sectors.append(Sector(vertex_indices=best_loop, info=info))
+            doom_map.sector_regions.append(
+                SectorRegion(sector_index=sector_index, vertex_indices=best_loop)
+            )
 
     def _build_loops(self, edges: list[tuple[int, int]]) -> list[list[int]]:
         remaining_edges = edges[:]

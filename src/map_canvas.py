@@ -1,12 +1,12 @@
 import math
 from typing import Optional
 
-from PySide6.QtCore import QPointF, Qt, Signal
+from PySide6.QtCore import QEvent, QPointF, Qt, Signal
 from PySide6.QtGui import QColor, QKeyEvent, QMouseEvent, QPainter, QPaintEvent, QPen, QWheelEvent
 from PySide6.QtWidgets import QWidget
 
 from controls_manager import ControlsManager
-from models import DoomMap, Linedef, Sector, Vertex
+from models import DoomMap, Linedef, SectorDef, SectorRegion, Sidedef, Vertex
 
 
 class MapCanvas(QWidget):
@@ -24,6 +24,7 @@ class MapCanvas(QWidget):
         self.pan_start_mouse: Optional[QPointF] = None
         self.is_panning: bool = False
         self.hover_mouse: Optional[QPointF] = None
+        self.hovered_sector_index: Optional[int] = None
         self.pending_polygon: list[tuple[int, int]] = []
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setMouseTracking(True)
@@ -32,6 +33,7 @@ class MapCanvas(QWidget):
     def set_map(self, doom_map: DoomMap) -> None:
         self.map = doom_map
         self.pending_polygon.clear()
+        self.hovered_sector_index = None
         self.update()
 
     def ensure_map(self) -> DoomMap:
@@ -124,12 +126,12 @@ class MapCanvas(QWidget):
             sx, sy = self.world_to_screen(vx, vy)
             painter.drawEllipse(QPointF(sx, sy), 4, 4)
 
-    def sector_world_points(self, sector: Sector) -> list[tuple[float, float]]:
+    def sector_world_points(self, region: SectorRegion) -> list[tuple[float, float]]:
         if self.map is None:
             return []
 
         points: list[tuple[float, float]] = []
-        for vertex_index in sector.vertex_indices:
+        for vertex_index in region.vertex_indices:
             if vertex_index < 0 or vertex_index >= len(self.map.vertexes):
                 return []
             vertex = self.map.vertexes[vertex_index]
@@ -140,13 +142,18 @@ class MapCanvas(QWidget):
         if self.map is None:
             return
 
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(110, 155, 180, 70))
-
-        for sector in self.map.sectors:
-            points = self.sector_world_points(sector)
+        for region in self.map.sector_regions:
+            points = self.sector_world_points(region)
             if len(points) < 3:
                 continue
+
+            is_hovered = region.sector_index == self.hovered_sector_index
+            if is_hovered:
+                painter.setPen(QPen(QColor(255, 240, 170), 2))
+                painter.setBrush(QColor(180, 210, 235, 110))
+            else:
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QColor(110, 155, 180, 70))
 
             polygon: list[QPointF] = []
             for wx, wy in points:
@@ -173,26 +180,42 @@ class MapCanvas(QWidget):
             j = i
         return inside
 
-    def find_sector_at(self, sx: float, sy: float) -> Optional[tuple[int, Sector]]:
+    def find_sector_at(self, sx: float, sy: float) -> Optional[int]:
         if self.map is None:
             return None
 
         wx, wy = self.screen_to_world(sx, sy)
+        matches: list[tuple[float, int]] = []
 
-        for index in range(len(self.map.sectors) - 1, -1, -1):
-            sector = self.map.sectors[index]
-            polygon = self.sector_world_points(sector)
+        for region in self.map.sector_regions:
+            polygon = self.sector_world_points(region)
             if self.point_in_polygon(wx, wy, polygon):
-                return index, sector
+                area = abs(self.polygon_area(polygon))
+                matches.append((area, region.sector_index))
 
-        return None
+        if not matches:
+            return None
+
+        # Prefer the smallest containing region so nested sectors are selectable.
+        matches.sort(key=lambda item: item[0])
+        return matches[0][1]
+
+    def polygon_area(self, polygon: list[tuple[float, float]]) -> float:
+        if len(polygon) < 3:
+            return 0.0
+
+        area = 0.0
+        for i in range(len(polygon)):
+            x1, y1 = polygon[i]
+            x2, y2 = polygon[(i + 1) % len(polygon)]
+            area += (x1 * y2) - (x2 * y1)
+        return 0.5 * area
 
     def emit_sector_info_at(self, sx: float, sy: float) -> None:
-        sector_match = self.find_sector_at(sx, sy)
-        if sector_match is None:
+        sector_index = self.find_sector_at(sx, sy)
+        if sector_index is None:
             return
 
-        sector_index, _ = sector_match
         self.sector_selected.emit(sector_index)
 
     def try_close_sector(self, point: tuple[int, int]) -> bool:
@@ -214,6 +237,9 @@ class MapCanvas(QWidget):
             return
 
         doom_map = self.ensure_map()
+        sector_index = len(doom_map.sector_defs)
+        doom_map.sector_defs.append(SectorDef())
+
         base_vertex_index = len(doom_map.vertexes)
         sector_vertex_indices: list[int] = []
 
@@ -225,11 +251,34 @@ class MapCanvas(QWidget):
         for i in range(len(sector_vertex_indices)):
             v1 = sector_vertex_indices[i]
             v2 = sector_vertex_indices[(i + 1) % len(sector_vertex_indices)]
-            doom_map.linedefs.append(
-                Linedef(v1=v1, v2=v2, flags=0, special=0, tag=0, right=-1, left=-1)
+
+            sidedef_index = len(doom_map.sidedefs)
+            doom_map.sidedefs.append(
+                Sidedef(
+                    x_offset=0,
+                    y_offset=0,
+                    upper_texture="",
+                    lower_texture="",
+                    middle_texture="",
+                    sector_index=sector_index,
+                )
             )
 
-        doom_map.sectors.append(Sector(vertex_indices=sector_vertex_indices))
+            doom_map.linedefs.append(
+                Linedef(
+                    v1=v1,
+                    v2=v2,
+                    flags=0,
+                    special=0,
+                    tag=0,
+                    front_sidedef=sidedef_index,
+                    back_sidedef=-1,
+                )
+            )
+
+        doom_map.sector_regions.append(
+            SectorRegion(sector_index=sector_index, vertex_indices=sector_vertex_indices)
+        )
         self.pending_polygon.clear()
 
     def increase_grid_size(self) -> None:
@@ -270,11 +319,18 @@ class MapCanvas(QWidget):
             painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
 
     def wheelEvent(self, event: QWheelEvent) -> None:
+        anchor = event.position()
+        world_x, world_y = self.screen_to_world(anchor.x(), anchor.y())
+
         delta = event.angleDelta().y()
         if delta > 0:
             self.zoom *= 1.1
         else:
             self.zoom /= 1.1
+
+        # Keep the world point under the mouse fixed while zooming.
+        self.offset_x = anchor.x() - (self.width() / 2) - (world_x * self.zoom)
+        self.offset_y = anchor.y() - (self.height() / 2) + (world_y * self.zoom)
         self.update()
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
@@ -296,6 +352,7 @@ class MapCanvas(QWidget):
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         self.hover_mouse = event.position()
+        self.hovered_sector_index = self.find_sector_at(event.position().x(), event.position().y())
 
         if self.last_mouse is None:
             self.update()
@@ -312,6 +369,12 @@ class MapCanvas(QWidget):
         self.offset_y += diff.y()
         self.last_mouse = pos
         self.update()
+
+    def leaveEvent(self, event: QEvent) -> None:
+        self.hover_mouse = None
+        self.hovered_sector_index = None
+        self.update()
+        super().leaveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         self.hover_mouse = event.position()

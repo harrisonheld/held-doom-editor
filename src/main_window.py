@@ -98,11 +98,10 @@ class MainWindow(QMainWindow):
         if self.canvas.map is None:
             return
 
-        if sector_index < 0 or sector_index >= len(self.canvas.map.sectors):
+        if sector_index < 0 or sector_index >= len(self.canvas.map.sector_defs):
             return
 
-        sector = self.canvas.map.sectors[sector_index]
-        info = sector.info
+        sector_def = self.canvas.map.sector_defs[sector_index]
 
         dialog = QDialog(self)
         dialog.setWindowTitle(f"Edit Sector {sector_index}")
@@ -112,22 +111,27 @@ class MainWindow(QMainWindow):
 
         floor_spin = QSpinBox(dialog)
         floor_spin.setRange(-32768, 32767)
-        floor_spin.setValue(info.floor_height)
+        floor_spin.setValue(sector_def.floor_height)
         form_layout.addRow("Floor Height", floor_spin)
 
         ceiling_spin = QSpinBox(dialog)
         ceiling_spin.setRange(-32768, 32767)
-        ceiling_spin.setValue(info.ceiling_height)
+        ceiling_spin.setValue(sector_def.ceiling_height)
         form_layout.addRow("Ceiling Height", ceiling_spin)
 
         light_spin = QSpinBox(dialog)
         light_spin.setRange(0, 255)
-        light_spin.setValue(info.light_level)
+        light_spin.setValue(sector_def.light_level)
         form_layout.addRow("Light Level", light_spin)
+
+        special_spin = QSpinBox(dialog)
+        special_spin.setRange(0, 32767)
+        special_spin.setValue(sector_def.special_type)
+        form_layout.addRow("Special Type", special_spin)
 
         tag_spin = QSpinBox(dialog)
         tag_spin.setRange(0, 32767)
-        tag_spin.setValue(info.tag)
+        tag_spin.setValue(sector_def.tag)
         form_layout.addRow("Tag", tag_spin)
 
         layout.addLayout(form_layout)
@@ -143,10 +147,11 @@ class MainWindow(QMainWindow):
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
 
-        info.floor_height = floor_spin.value()
-        info.ceiling_height = ceiling_spin.value()
-        info.light_level = light_spin.value()
-        info.tag = tag_spin.value()
+        sector_def.floor_height = floor_spin.value()
+        sector_def.ceiling_height = ceiling_spin.value()
+        sector_def.light_level = light_spin.value()
+        sector_def.special_type = special_spin.value()
+        sector_def.tag = tag_spin.value()
         self.canvas.update()
 
     def update_loaded_status_label(self) -> None:
