@@ -1,4 +1,5 @@
 import math
+from enum import Enum
 from typing import Optional
 
 from PySide6.QtCore import QEvent, QPointF, Qt, Signal
@@ -6,16 +7,26 @@ from PySide6.QtGui import QColor, QKeyEvent, QMouseEvent, QPainter, QPaintEvent,
 from PySide6.QtWidgets import QWidget
 
 from controls_manager import ControlsManager
-from models import DoomMap, Linedef, SectorDef, SectorRegion, Sidedef, Vertex
+from models import DoomMap, Linedef, SectorDef, SectorRegion, Sidedef, Thing, Vertex
+
+
+class EditMode(Enum):
+    SECTOR = "sector"
+    THING = "thing"
+    LINE = "line"
 
 
 class MapCanvas(QWidget):
     sector_selected = Signal(int)
+    thing_selected = Signal(int)
+    linedef_selected = Signal(int)
+    mode_changed = Signal(str)
 
     def __init__(self, controls_manager: ControlsManager) -> None:
         super().__init__()
         self.controls_manager = controls_manager
         self.map: Optional[DoomMap] = None
+        self.mode: EditMode = EditMode.SECTOR
         self.zoom: float = 0.5
         self.offset_x: float = 0
         self.offset_y: float = 0
@@ -25,6 +36,8 @@ class MapCanvas(QWidget):
         self.is_panning: bool = False
         self.hover_mouse: Optional[QPointF] = None
         self.hovered_sector_index: Optional[int] = None
+        self.hovered_thing_index: Optional[int] = None
+        self.hovered_linedef_index: Optional[int] = None
         self.pending_polygon: list[tuple[int, int]] = []
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setMouseTracking(True)
@@ -34,6 +47,32 @@ class MapCanvas(QWidget):
         self.map = doom_map
         self.pending_polygon.clear()
         self.hovered_sector_index = None
+        self.hovered_thing_index = None
+        self.hovered_linedef_index = None
+        self.update()
+
+    def set_mode_sector(self) -> None:
+        self.mode = EditMode.SECTOR
+        self.pending_polygon.clear()
+        self.hovered_thing_index = None
+        self.hovered_linedef_index = None
+        self.mode_changed.emit(self.mode.value)
+        self.update()
+
+    def set_mode_thing(self) -> None:
+        self.mode = EditMode.THING
+        self.pending_polygon.clear()
+        self.hovered_sector_index = None
+        self.hovered_linedef_index = None
+        self.mode_changed.emit(self.mode.value)
+        self.update()
+
+    def set_mode_line(self) -> None:
+        self.mode = EditMode.LINE
+        self.pending_polygon.clear()
+        self.hovered_sector_index = None
+        self.hovered_thing_index = None
+        self.mode_changed.emit(self.mode.value)
         self.update()
 
     def ensure_map(self) -> DoomMap:
@@ -150,10 +189,10 @@ class MapCanvas(QWidget):
             is_hovered = region.sector_index == self.hovered_sector_index
             if is_hovered:
                 painter.setPen(QPen(QColor(255, 240, 170), 2))
-                painter.setBrush(QColor(180, 210, 235, 110))
+                painter.setBrush(QColor(180, 210, 235))
             else:
                 painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(QColor(110, 155, 180, 70))
+                painter.setBrush(QColor(110, 155, 180))
 
             polygon: list[QPointF] = []
             for wx, wy in points:
@@ -161,6 +200,57 @@ class MapCanvas(QWidget):
                 polygon.append(QPointF(sx, sy))
 
             painter.drawPolygon(polygon)
+
+    def draw_things(self, painter: QPainter) -> None:
+        if self.map is None:
+            return
+
+        for index, thing in enumerate(self.map.things):
+            self.draw_thing(painter, thing, hovered=index == self.hovered_thing_index)
+
+    def draw_thing(self, painter: QPainter, thing: Thing, *, hovered: bool = False) -> None:
+        sx, sy = self.world_to_screen(thing.x, thing.y)
+
+        is_player_start = thing.thing_type == 1
+        fill_color = QColor(255, 245, 160) if hovered and is_player_start else (
+            QColor(255, 220, 120) if is_player_start else QColor(120, 220, 255)
+        )
+        if hovered and not is_player_start:
+            fill_color = QColor(160, 240, 255)
+        outline_color = QColor(40, 40, 40)
+
+        painter.setPen(QPen(outline_color, 2 if hovered else 1))
+        painter.setBrush(fill_color)
+        painter.drawEllipse(QPointF(sx, sy), 7 if hovered else 5, 7 if hovered else 5)
+
+        angle_radians = math.radians(thing.angle)
+        arrow_length = 14 if hovered else 10
+        arrow_x = sx + math.cos(angle_radians) * arrow_length
+        arrow_y = sy - math.sin(angle_radians) * arrow_length
+        painter.setPen(QPen(fill_color, 2))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawLine(QPointF(sx, sy), QPointF(arrow_x, arrow_y))
+
+    def draw_linedefs(self, painter: QPainter) -> None:
+        if self.map is None:
+            return
+
+        for index, line in enumerate(self.map.linedefs):
+            if line.v1 >= len(self.map.vertexes):
+                continue
+            if line.v2 >= len(self.map.vertexes):
+                continue
+
+            a = self.map.vertexes[line.v1]
+            b = self.map.vertexes[line.v2]
+            x1, y1 = self.world_to_screen(a.x, a.y)
+            x2, y2 = self.world_to_screen(b.x, b.y)
+
+            if index == self.hovered_linedef_index:
+                painter.setPen(QPen(QColor(255, 240, 170), 3))
+            else:
+                painter.setPen(QPen(Qt.GlobalColor.white, 1))
+            painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
 
     def point_in_polygon(self, x: float, y: float, polygon: list[tuple[float, float]]) -> bool:
         inside = False
@@ -200,6 +290,64 @@ class MapCanvas(QWidget):
         matches.sort(key=lambda item: item[0])
         return matches[0][1]
 
+    def find_thing_at(self, sx: float, sy: float, max_distance: float = 10.0) -> Optional[int]:
+        if self.map is None:
+            return None
+
+        best_index: Optional[int] = None
+        best_distance = max_distance
+        for index, thing in enumerate(self.map.things):
+            tx, ty = self.world_to_screen(thing.x, thing.y)
+            distance = math.hypot(tx - sx, ty - sy)
+            if distance <= best_distance:
+                best_distance = distance
+                best_index = index
+        return best_index
+
+    def point_to_segment_distance(
+        self,
+        px: float,
+        py: float,
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
+    ) -> float:
+        dx = x2 - x1
+        dy = y2 - y1
+        if dx == 0 and dy == 0:
+            return math.hypot(px - x1, py - y1)
+
+        t = ((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy)
+        t = max(0.0, min(1.0, t))
+        nearest_x = x1 + t * dx
+        nearest_y = y1 + t * dy
+        return math.hypot(px - nearest_x, py - nearest_y)
+
+    def find_linedef_at(self, sx: float, sy: float, max_distance: float = 8.0) -> Optional[int]:
+        if self.map is None:
+            return None
+
+        best_index: Optional[int] = None
+        best_distance = max_distance
+
+        for index, line in enumerate(self.map.linedefs):
+            if line.v1 >= len(self.map.vertexes):
+                continue
+            if line.v2 >= len(self.map.vertexes):
+                continue
+
+            a = self.map.vertexes[line.v1]
+            b = self.map.vertexes[line.v2]
+            x1, y1 = self.world_to_screen(a.x, a.y)
+            x2, y2 = self.world_to_screen(b.x, b.y)
+            distance = self.point_to_segment_distance(sx, sy, x1, y1, x2, y2)
+            if distance <= best_distance:
+                best_distance = distance
+                best_index = index
+
+        return best_index
+
     def polygon_area(self, polygon: list[tuple[float, float]]) -> float:
         if len(polygon) < 3:
             return 0.0
@@ -217,6 +365,20 @@ class MapCanvas(QWidget):
             return
 
         self.sector_selected.emit(sector_index)
+
+    def emit_thing_info_at(self, sx: float, sy: float) -> None:
+        thing_index = self.find_thing_at(sx, sy)
+        if thing_index is None:
+            return
+
+        self.thing_selected.emit(thing_index)
+
+    def emit_linedef_info_at(self, sx: float, sy: float) -> None:
+        linedef_index = self.find_linedef_at(sx, sy)
+        if linedef_index is None:
+            return
+
+        self.linedef_selected.emit(linedef_index)
 
     def try_close_sector(self, point: tuple[int, int]) -> bool:
         if len(self.pending_polygon) < 3:
@@ -297,6 +459,7 @@ class MapCanvas(QWidget):
 
         if self.map:
             self.draw_sectors(painter)
+            self.draw_things(painter)
 
         self.draw_grid_highlight(painter)
         self.draw_pending_polygon(painter)
@@ -304,19 +467,7 @@ class MapCanvas(QWidget):
         if not self.map:
             return
 
-        painter.setPen(QPen(Qt.GlobalColor.white, 1))
-
-        for line in self.map.linedefs:
-            if line.v1 >= len(self.map.vertexes):
-                continue
-            if line.v2 >= len(self.map.vertexes):
-                continue
-
-            a = self.map.vertexes[line.v1]
-            b = self.map.vertexes[line.v2]
-            x1, y1 = self.world_to_screen(a.x, a.y)
-            x2, y2 = self.world_to_screen(b.x, b.y)
-            painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+        self.draw_linedefs(painter)
 
     def wheelEvent(self, event: QWheelEvent) -> None:
         anchor = event.position()
@@ -352,7 +503,18 @@ class MapCanvas(QWidget):
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         self.hover_mouse = event.position()
-        self.hovered_sector_index = self.find_sector_at(event.position().x(), event.position().y())
+        if self.mode == EditMode.SECTOR:
+            self.hovered_sector_index = self.find_sector_at(event.position().x(), event.position().y())
+            self.hovered_thing_index = None
+            self.hovered_linedef_index = None
+        elif self.mode == EditMode.THING:
+            self.hovered_sector_index = None
+            self.hovered_thing_index = self.find_thing_at(event.position().x(), event.position().y())
+            self.hovered_linedef_index = None
+        elif self.mode == EditMode.LINE:
+            self.hovered_sector_index = None
+            self.hovered_thing_index = None
+            self.hovered_linedef_index = self.find_linedef_at(event.position().x(), event.position().y())
 
         if self.last_mouse is None:
             self.update()
@@ -373,6 +535,8 @@ class MapCanvas(QWidget):
     def leaveEvent(self, event: QEvent) -> None:
         self.hover_mouse = None
         self.hovered_sector_index = None
+        self.hovered_thing_index = None
+        self.hovered_linedef_index = None
         self.update()
         super().leaveEvent(event)
 
@@ -380,13 +544,30 @@ class MapCanvas(QWidget):
         self.hover_mouse = event.position()
         if self.controls_manager.matches_mouse("pan_drag", event.button()):
             if not self.is_panning:
-                self.emit_sector_info_at(event.position().x(), event.position().y())
+                if self.mode == EditMode.SECTOR:
+                    self.emit_sector_info_at(event.position().x(), event.position().y())
+                elif self.mode == EditMode.THING:
+                    self.emit_thing_info_at(event.position().x(), event.position().y())
+                elif self.mode == EditMode.LINE:
+                    self.emit_linedef_info_at(event.position().x(), event.position().y())
             self.last_mouse = None
             self.pan_start_mouse = None
             self.is_panning = False
         self.update()
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
+        if self.controls_manager.matches("mode_sector", event.key()):
+            self.set_mode_sector()
+            return
+
+        if self.controls_manager.matches("mode_thing", event.key()):
+            self.set_mode_thing()
+            return
+
+        if self.controls_manager.matches("mode_line", event.key()):
+            self.set_mode_line()
+            return
+
         if self.controls_manager.matches("cancel_sector_draw", event.key()):
             self.pending_polygon.clear()
             self.update()

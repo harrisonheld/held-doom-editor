@@ -8,6 +8,16 @@ class Vertex:
     y: int
 
 
+# https://doomwiki.org/wiki/Thing
+@dataclass
+class Thing:
+    x: int
+    y: int
+    angle: int
+    thing_type: int
+    flags: int
+
+
 # https://doomwiki.org/wiki/Linedef
 @dataclass
 class Linedef:
@@ -54,6 +64,7 @@ class SectorRegion:
 
 class DoomMap:
     def __init__(self) -> None:
+        self.things: list[Thing] = []
         self.vertexes: list[Vertex] = []
         self.linedefs: list[Linedef] = []
         self.sidedefs: list[Sidedef] = []

@@ -24,7 +24,7 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
 
-        self.setWindowTitle("Python Doom WAD Editor")
+        self.setWindowTitle("Held Doom Editor")
         self.resize(1200, 800)
 
         self.controls_manager = ControlsManager()
@@ -33,6 +33,9 @@ class MainWindow(QMainWindow):
         self.actions_by_control_id: dict[str, QAction] = {}
         self.setCentralWidget(self.canvas)
         self.canvas.sector_selected.connect(self.edit_sector)
+        self.canvas.thing_selected.connect(self.edit_thing)
+        self.canvas.linedef_selected.connect(self.edit_linedef)
+        self.canvas.mode_changed.connect(self.update_mode_status_label)
         self.controls_manager.binding_changed.connect(self.refresh_bound_action)
         self.loaded_status_label = QLabel()
         self.mode_status_label = QLabel()
@@ -70,6 +73,12 @@ class MainWindow(QMainWindow):
         open_action = self.create_bound_action("open_wad", self.open_wad)
         file_menu.addAction(open_action)
 
+        save_action = self.create_bound_action("save_wad", self.save_wad)
+        file_menu.addAction(save_action)
+
+        save_as_action = self.create_bound_action("save_wad_as", self.save_wad_as)
+        file_menu.addAction(save_as_action)
+
         open_map_action = self.create_bound_action("open_map", self.open_map)
         file_menu.addAction(open_map_action)
 
@@ -91,8 +100,30 @@ class MainWindow(QMainWindow):
         )
         view_menu.addAction(increase_grid_action)
 
-    def update_mode_status_label(self) -> None:
-        self.mode_status_label.setText("MODE: SECTOR")
+        mode_menu = self.menuBar().addMenu("Mode")
+
+        sector_mode_action = self.create_bound_action(
+            "mode_sector",
+            self.canvas.set_mode_sector,
+        )
+        mode_menu.addAction(sector_mode_action)
+
+        thing_mode_action = self.create_bound_action(
+            "mode_thing",
+            self.canvas.set_mode_thing,
+        )
+        mode_menu.addAction(thing_mode_action)
+
+        line_mode_action = self.create_bound_action(
+            "mode_line",
+            self.canvas.set_mode_line,
+        )
+        mode_menu.addAction(line_mode_action)
+
+    def update_mode_status_label(self, mode_name: str | None = None) -> None:
+        if mode_name is None:
+            mode_name = self.canvas.mode.value
+        self.mode_status_label.setText(f"MODE: {mode_name.upper()}")
 
     def edit_sector(self, sector_index: int) -> None:
         if self.canvas.map is None:
@@ -152,6 +183,141 @@ class MainWindow(QMainWindow):
         sector_def.light_level = light_spin.value()
         sector_def.special_type = special_spin.value()
         sector_def.tag = tag_spin.value()
+        self.canvas.update()
+
+    def edit_thing(self, thing_index: int) -> None:
+        if self.canvas.map is None:
+            return
+
+        if thing_index < 0 or thing_index >= len(self.canvas.map.things):
+            return
+
+        thing = self.canvas.map.things[thing_index]
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Edit Thing {thing_index}")
+
+        layout = QVBoxLayout(dialog)
+        form_layout = QFormLayout()
+
+        x_spin = QSpinBox(dialog)
+        x_spin.setRange(-32768, 32767)
+        x_spin.setValue(thing.x)
+        form_layout.addRow("X", x_spin)
+
+        y_spin = QSpinBox(dialog)
+        y_spin.setRange(-32768, 32767)
+        y_spin.setValue(thing.y)
+        form_layout.addRow("Y", y_spin)
+
+        angle_spin = QSpinBox(dialog)
+        angle_spin.setRange(0, 359)
+        angle_spin.setValue(thing.angle)
+        form_layout.addRow("Angle", angle_spin)
+
+        type_spin = QSpinBox(dialog)
+        type_spin.setRange(0, 65535)
+        type_spin.setValue(thing.thing_type)
+        form_layout.addRow("Type", type_spin)
+
+        flags_spin = QSpinBox(dialog)
+        flags_spin.setRange(0, 65535)
+        flags_spin.setValue(thing.flags)
+        form_layout.addRow("Flags", flags_spin)
+
+        layout.addLayout(form_layout)
+
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+            parent=dialog,
+        )
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        layout.addWidget(button_box)
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        thing.x = x_spin.value()
+        thing.y = y_spin.value()
+        thing.angle = angle_spin.value()
+        thing.thing_type = type_spin.value()
+        thing.flags = flags_spin.value()
+        self.canvas.update()
+
+    def edit_linedef(self, linedef_index: int) -> None:
+        if self.canvas.map is None:
+            return
+
+        if linedef_index < 0 or linedef_index >= len(self.canvas.map.linedefs):
+            return
+
+        linedef = self.canvas.map.linedefs[linedef_index]
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Edit Linedef {linedef_index}")
+
+        layout = QVBoxLayout(dialog)
+        form_layout = QFormLayout()
+
+        vertex_max = max(0, len(self.canvas.map.vertexes) - 1)
+        sidedef_max = max(0, len(self.canvas.map.sidedefs) - 1)
+
+        v1_spin = QSpinBox(dialog)
+        v1_spin.setRange(0, vertex_max)
+        v1_spin.setValue(min(max(linedef.v1, 0), vertex_max))
+        form_layout.addRow("Vertex 1", v1_spin)
+
+        v2_spin = QSpinBox(dialog)
+        v2_spin.setRange(0, vertex_max)
+        v2_spin.setValue(min(max(linedef.v2, 0), vertex_max))
+        form_layout.addRow("Vertex 2", v2_spin)
+
+        flags_spin = QSpinBox(dialog)
+        flags_spin.setRange(0, 65535)
+        flags_spin.setValue(linedef.flags)
+        form_layout.addRow("Flags", flags_spin)
+
+        special_spin = QSpinBox(dialog)
+        special_spin.setRange(0, 65535)
+        special_spin.setValue(linedef.special)
+        form_layout.addRow("Special", special_spin)
+
+        tag_spin = QSpinBox(dialog)
+        tag_spin.setRange(0, 65535)
+        tag_spin.setValue(linedef.tag)
+        form_layout.addRow("Tag", tag_spin)
+
+        front_spin = QSpinBox(dialog)
+        front_spin.setRange(-1, sidedef_max)
+        front_spin.setValue(min(max(linedef.front_sidedef, -1), sidedef_max))
+        form_layout.addRow("Front Sidedef", front_spin)
+
+        back_spin = QSpinBox(dialog)
+        back_spin.setRange(-1, sidedef_max)
+        back_spin.setValue(min(max(linedef.back_sidedef, -1), sidedef_max))
+        form_layout.addRow("Back Sidedef", back_spin)
+
+        layout.addLayout(form_layout)
+
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+            parent=dialog,
+        )
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        layout.addWidget(button_box)
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        linedef.v1 = v1_spin.value()
+        linedef.v2 = v2_spin.value()
+        linedef.flags = flags_spin.value()
+        linedef.special = special_spin.value()
+        linedef.tag = tag_spin.value()
+        linedef.front_sidedef = front_spin.value()
+        linedef.back_sidedef = back_spin.value()
         self.canvas.update()
 
     def update_loaded_status_label(self) -> None:
@@ -214,5 +380,38 @@ class MainWindow(QMainWindow):
                 return
 
             self.load_selected_map(selected_map)
+        except Exception as exc:
+            QMessageBox.critical(self, "Error", str(exc))
+
+    def save_wad(self) -> None:
+        if not self.editor_service.has_wad_loaded():
+            self.save_wad_as()
+            return
+
+        try:
+            output_filename = self.editor_service.save_current_map()
+            self.update_loaded_status_label()
+            QMessageBox.information(self, "Saved", f"Saved {output_filename}")
+        except Exception as exc:
+            QMessageBox.critical(self, "Error", str(exc))
+
+    def save_wad_as(self) -> None:
+        if not self.editor_service.has_wad_loaded():
+            QMessageBox.critical(self, "Error", "No WAD is loaded")
+            return
+
+        filename, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save WAD As",
+            self.editor_service.current_wad_filename or "",
+            "WAD Files (*.wad)",
+        )
+        if not filename:
+            return
+
+        try:
+            output_filename = self.editor_service.save_current_map(filename)
+            self.update_loaded_status_label()
+            QMessageBox.information(self, "Saved", f"Saved {output_filename}")
         except Exception as exc:
             QMessageBox.critical(self, "Error", str(exc))

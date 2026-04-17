@@ -1,7 +1,14 @@
 import struct
 from collections import defaultdict
+from dataclasses import dataclass
 
-from models import DoomMap, Linedef, LumpEntry, SectorDef, SectorRegion, Sidedef, Vertex
+from models import DoomMap, Linedef, LumpEntry, SectorDef, SectorRegion, Sidedef, Thing, Vertex
+
+
+@dataclass
+class WADLumpData:
+    name: str
+    data: bytes
 
 
 class WadArchive:
@@ -42,6 +49,14 @@ class WadArchive:
                 map_names.append(name)
         return map_names
 
+    def get_map_doom_map(self, map_name: str) -> DoomMap:
+        parser = DoomMapParser(self)
+        return parser.load_map(map_name)
+
+    def save_map(self, map_name: str, doom_map: DoomMap, filename: str | None = None) -> str:
+        writer = WadWriter(self)
+        return writer.save_map(map_name, doom_map, filename)
+
 
 class DoomMapParser:
     MAP_CHILD_LUMP_NAMES = {"THINGS", "LINEDEFS", "SIDEDEFS", "VERTEXES", "SECTORS"}
@@ -61,12 +76,31 @@ class DoomMapParser:
                 needed[lump.name] = lump
 
         doom_map = DoomMap()
+        self._load_things(needed, doom_map)
         self._load_vertexes(needed, doom_map)
         self._load_linedefs(needed, doom_map)
         self._load_sidedefs(needed, doom_map)
         self._load_sector_defs(needed, doom_map)
         self._build_sector_regions(doom_map)
         return doom_map
+
+    def _load_things(self, needed: dict[str, LumpEntry], doom_map: DoomMap) -> None:
+        lump = needed.get("THINGS")
+        if lump is None:
+            return
+
+        raw = self.wad_archive.data[lump.offset : lump.offset + lump.size]
+        for i in range(0, len(raw), 10):
+            x, y, angle, thing_type, flags = struct.unpack("<hhhhh", raw[i : i + 10])
+            doom_map.things.append(
+                Thing(
+                    x=x,
+                    y=y,
+                    angle=angle,
+                    thing_type=thing_type,
+                    flags=flags,
+                )
+            )
 
     def _load_vertexes(self, needed: dict[str, LumpEntry], doom_map: DoomMap) -> None:
         lump = needed.get("VERTEXES")
@@ -203,3 +237,148 @@ class DoomMapParser:
             b = doom_map.vertexes[b_index]
             area += (a.x * b.y) - (b.x * a.y)
         return 0.5 * area
+
+
+class WadWriter:
+    MAP_LUMP_ORDER = ["THINGS", "LINEDEFS", "SIDEDEFS", "VERTEXES", "SECTORS"]
+
+    def __init__(self, wad_archive: WadArchive) -> None:
+        self.wad_archive = wad_archive
+
+    def save_map(self, map_name: str, doom_map: DoomMap, filename: str | None = None) -> str:
+        output_filename = filename or self.wad_archive.filename
+        map_lumps = self._build_map_lumps(doom_map)
+        written_lumps = self._rewrite_lumps(map_name, map_lumps)
+        self._write_wad_file(output_filename, written_lumps)
+        return output_filename
+
+    def _build_map_lumps(self, doom_map: DoomMap) -> dict[str, bytes]:
+        return {
+            "THINGS": self._serialize_things(doom_map),
+            "LINEDEFS": self._serialize_linedefs(doom_map),
+            "SIDEDEFS": self._serialize_sidedefs(doom_map),
+            "VERTEXES": self._serialize_vertexes(doom_map),
+            "SECTORS": self._serialize_sector_defs(doom_map),
+        }
+
+    def _serialize_things(self, doom_map: DoomMap) -> bytes:
+        if hasattr(doom_map, "things"):
+            data = bytearray()
+            for thing in doom_map.things:
+                data.extend(struct.pack("<hhhhh", thing.x, thing.y, thing.angle, thing.thing_type, thing.flags))
+            return bytes(data)
+
+        return self._get_original_lump_data("THINGS")
+
+    def _serialize_vertexes(self, doom_map: DoomMap) -> bytes:
+        data = bytearray()
+        for vertex in doom_map.vertexes:
+            data.extend(struct.pack("<hh", vertex.x, vertex.y))
+        return bytes(data)
+
+    def _serialize_linedefs(self, doom_map: DoomMap) -> bytes:
+        data = bytearray()
+        for linedef in doom_map.linedefs:
+            data.extend(
+                struct.pack(
+                    "<hhhhhhh",
+                    linedef.v1,
+                    linedef.v2,
+                    linedef.flags,
+                    linedef.special,
+                    linedef.tag,
+                    linedef.front_sidedef,
+                    linedef.back_sidedef,
+                )
+            )
+        return bytes(data)
+
+    def _serialize_sidedefs(self, doom_map: DoomMap) -> bytes:
+        data = bytearray()
+        for sidedef in doom_map.sidedefs:
+            data.extend(
+                struct.pack(
+                    "<hh8s8s8sh",
+                    sidedef.x_offset,
+                    sidedef.y_offset,
+                    self._pack_name(sidedef.upper_texture),
+                    self._pack_name(sidedef.lower_texture),
+                    self._pack_name(sidedef.middle_texture),
+                    sidedef.sector_index,
+                )
+            )
+        return bytes(data)
+
+    def _serialize_sector_defs(self, doom_map: DoomMap) -> bytes:
+        data = bytearray()
+        for sector_def in doom_map.sector_defs:
+            data.extend(
+                struct.pack(
+                    "<hh8s8shhh",
+                    sector_def.floor_height,
+                    sector_def.ceiling_height,
+                    self._pack_name(sector_def.floor_texture),
+                    self._pack_name(sector_def.ceiling_texture),
+                    sector_def.light_level,
+                    sector_def.special_type,
+                    sector_def.tag,
+                )
+            )
+        return bytes(data)
+
+    def _pack_name(self, value: str) -> bytes:
+        return value.encode("ascii", errors="ignore")[:8].ljust(8, b"\0")
+
+    def _get_original_lump_data(self, lump_name: str) -> bytes:
+        for lump in self.wad_archive.lumps:
+            if lump.name == lump_name:
+                return self.wad_archive.data[lump.offset : lump.offset + lump.size]
+        return b""
+
+    def _rewrite_lumps(self, map_name: str, map_lumps: dict[str, bytes]) -> list[tuple[str, bytes]]:
+        lumps: list[tuple[str, bytes]] = []
+        index = self.wad_archive.find_lump_index(map_name)
+        if index is None:
+            raise ValueError("Map not found")
+
+        # Copy everything before the map marker.
+        for lump in self.wad_archive.lumps[: index + 1]:
+            lumps.append((lump.name, self.wad_archive.data[lump.offset : lump.offset + lump.size]))
+
+        # Replace the editable map lumps in canonical order.
+        for lump_name in self.MAP_LUMP_ORDER:
+            lumps.append((lump_name, map_lumps[lump_name]))
+
+        # Preserve everything after the original map lumps by skipping the old block.
+        skip_names = set(self.MAP_LUMP_ORDER)
+        after_index = index + 1
+        while after_index < len(self.wad_archive.lumps) and self.wad_archive.lumps[after_index].name in skip_names:
+            after_index += 1
+
+        for lump in self.wad_archive.lumps[after_index:]:
+            lumps.append((lump.name, self.wad_archive.data[lump.offset : lump.offset + lump.size]))
+
+        return lumps
+
+    def _write_wad_file(self, filename: str, lumps: list[tuple[str, bytes]]) -> None:
+        lump_entries: list[tuple[int, int, str]] = []
+        data = bytearray(b"\0" * 12)
+
+        for name, lump_data in lumps:
+            offset = len(data)
+            data.extend(lump_data)
+            lump_entries.append((offset, len(lump_data), name))
+
+        dir_offset = len(data)
+        for offset, size, name in lump_entries:
+            data.extend(struct.pack("<ii8s", offset, size, self._pack_name(name)))
+
+        wad_type = self.wad_archive.data[:4]
+        if wad_type not in (b"IWAD", b"PWAD"):
+            wad_type = b"PWAD"
+
+        header = struct.pack("<4sii", wad_type, len(lump_entries), dir_offset)
+        data[0:12] = header
+
+        with open(filename, "wb") as file_handle:
+            file_handle.write(data)

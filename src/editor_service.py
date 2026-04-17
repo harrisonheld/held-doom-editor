@@ -9,6 +9,7 @@ class DoomEditorService:
         self.current_wad: Optional[WadArchive] = None
         self.current_wad_filename: Optional[str] = None
         self.current_map_name: Optional[str] = None
+        self.current_map: Optional[DoomMap] = None
 
     def load_wad(self, filename: str) -> list[str]:
         self.current_wad = WadArchive(filename)
@@ -33,4 +34,18 @@ class DoomEditorService:
 
         self.current_map_name = map_name
         parser = DoomMapParser(self.current_wad)
-        return parser.load_map(map_name)
+        self.current_map = parser.load_map(map_name)
+        return self.current_map
+
+    def save_current_map(self, filename: str | None = None) -> str:
+        if self.current_wad is None:
+            raise ValueError("No WAD is loaded")
+        if self.current_map_name is None:
+            raise ValueError("No map is loaded")
+        if self.current_map is None:
+            raise ValueError("No editable map is loaded")
+
+        output_filename = self.current_wad.save_map(self.current_map_name, self.current_map, filename)
+        if filename is not None:
+            self.current_wad_filename = output_filename
+        return output_filename

@@ -20,6 +20,18 @@ class ControlsManager(QObject):
     def __init__(self) -> None:
         super().__init__()
         self._bindings: dict[str, ControlBinding] = {
+            "save_wad": ControlBinding(
+                action_id="save_wad",
+                label="Save",
+                shortcut="Ctrl+S",
+                key=Qt.Key.Key_S,
+            ),
+            "save_wad_as": ControlBinding(
+                action_id="save_wad_as",
+                label="Save As...",
+                shortcut="Ctrl+Shift+S",
+                key=Qt.Key.Key_S,
+            ),
             "open_wad": ControlBinding(
                 action_id="open_wad",
                 label="Open WAD",
@@ -31,6 +43,24 @@ class ControlsManager(QObject):
                 label="Open Map",
                 shortcut="Ctrl+M",
                 key=Qt.Key.Key_M,
+            ),
+            "mode_sector": ControlBinding(
+                action_id="mode_sector",
+                label="Sector Mode",
+                shortcut="S",
+                key=Qt.Key.Key_S,
+            ),
+            "mode_thing": ControlBinding(
+                action_id="mode_thing",
+                label="Thing Mode",
+                shortcut="T",
+                key=Qt.Key.Key_T,
+            ),
+            "mode_line": ControlBinding(
+                action_id="mode_line",
+                label="Line Mode",
+                shortcut="L",
+                key=Qt.Key.Key_L,
             ),
             "grid_decrease": ControlBinding(
                 action_id="grid_decrease",
