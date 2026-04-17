@@ -188,11 +188,11 @@ class MapCanvas(QWidget):
 
             is_hovered = region.sector_index == self.hovered_sector_index
             if is_hovered:
-                painter.setPen(QPen(QColor(255, 240, 170), 2))
-                painter.setBrush(QColor(180, 210, 235))
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QColor(180, 210, 235, 140))
             else:
                 painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(QColor(110, 155, 180))
+                painter.setBrush(QColor(110, 155, 180, 90))
 
             polygon: list[QPointF] = []
             for wx, wy in points:
