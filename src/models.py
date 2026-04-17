@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -25,7 +25,22 @@ class LumpEntry:
     size: int
 
 
+@dataclass
+class Sector:
+    vertex_indices: list[int]
+    info: "SectorInfo" = field(default_factory=lambda: SectorInfo())
+
+
+@dataclass
+class SectorInfo:
+    floor_height: int = 0
+    ceiling_height: int = 128
+    light_level: int = 160
+    tag: int = 0
+
+
 class DoomMap:
     def __init__(self) -> None:
         self.vertexes: list[Vertex] = []
         self.linedefs: list[Linedef] = []
+        self.sectors: list[Sector] = []
