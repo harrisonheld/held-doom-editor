@@ -3,6 +3,8 @@ import re
 from pathlib import Path
 from typing import Optional
 
+from PySide6.QtGui import QColor, QImage
+
 from models import DoomMap
 from wad import DoomMapParser, WadArchive
 
@@ -100,6 +102,57 @@ class DoomEditorService:
             logger.info("No IWAD loaded for game profile %s", game)
             return []
         return iwad.list_thing_ids()
+
+    def get_flat_image_for_current_game(self, flat_name: str) -> QImage | None:
+        if not flat_name or flat_name == "-":
+            return None
+
+        sources: list[WadArchive] = []
+        if self.current_wad is not None:
+            sources.append(self.current_wad)
+
+        game = self.current_game_profile()
+        if game is not None and game in self.iwads:
+            sources.append(self.iwads[game])
+
+        for key in sorted(self.iwads.keys()):
+            archive = self.iwads[key]
+            if archive not in sources:
+                sources.append(archive)
+
+        flat_data: bytes | None = None
+        for source in sources:
+            flat_data = source.get_flat_data(flat_name)
+            if flat_data is not None:
+                break
+
+        if flat_data is None:
+            return None
+
+        palette: list[tuple[int, int, int]] | None = None
+        for source in sources:
+            palette = source.get_palette()
+            if palette is not None:
+                break
+
+        return self._flat_to_image(flat_data, palette)
+
+    def _flat_to_image(
+        self,
+        flat_data: bytes,
+        palette: list[tuple[int, int, int]] | None,
+    ) -> QImage:
+        image = QImage(64, 64, QImage.Format.Format_RGB32)
+        for y in range(64):
+            for x in range(64):
+                palette_index = flat_data[y * 64 + x]
+                if palette is None:
+                    color = QColor(palette_index, palette_index, palette_index)
+                else:
+                    r, g, b = palette[palette_index]
+                    color = QColor(r, g, b)
+                image.setPixelColor(x, y, color)
+        return image
 
     def load_map(self, map_name: str) -> DoomMap:
         if self.current_wad is None:

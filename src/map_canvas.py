@@ -1,9 +1,20 @@
 import math
 from enum import Enum
-from typing import Optional
+from typing import Callable, Optional
 
 from PySide6.QtCore import QEvent, QPointF, Qt, Signal
-from PySide6.QtGui import QColor, QKeyEvent, QMouseEvent, QPainter, QPaintEvent, QPen, QWheelEvent
+from PySide6.QtGui import (
+    QBrush,
+    QColor,
+    QImage,
+    QKeyEvent,
+    QMouseEvent,
+    QPainter,
+    QPaintEvent,
+    QPen,
+    QPixmap,
+    QWheelEvent,
+)
 from PySide6.QtWidgets import QWidget
 
 from controls_manager import ControlsManager
@@ -20,6 +31,7 @@ class MapCanvas(QWidget):
     sector_selected = Signal(int)
     thing_selected = Signal(int)
     linedef_selected = Signal(int)
+    linedef_texture_requested = Signal(int)
     thing_create_requested = Signal(int, int)
     mode_changed = Signal(str)
 
@@ -40,12 +52,15 @@ class MapCanvas(QWidget):
         self.hovered_thing_index: Optional[int] = None
         self.hovered_linedef_index: Optional[int] = None
         self.pending_polygon: list[tuple[int, int]] = []
+        self.flat_provider: Optional[Callable[[str], Optional[QImage]]] = None
+        self.flat_brush_cache: dict[str, QBrush] = {}
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setMouseTracking(True)
         self.setMinimumSize(800, 600)
 
     def set_map(self, doom_map: DoomMap) -> None:
         self.map = doom_map
+        self.flat_brush_cache.clear()
         self.pending_polygon.clear()
         self.hovered_sector_index = None
         self.hovered_thing_index = None
@@ -80,6 +95,10 @@ class MapCanvas(QWidget):
         if self.map is None:
             self.map = DoomMap()
         return self.map
+
+    def set_flat_provider(self, provider: Callable[[str], Optional[QImage]]) -> None:
+        self.flat_provider = provider
+        self.flat_brush_cache.clear()
 
     def world_to_screen(self, x: int, y: int) -> tuple[float, float]:
         sx = self.width() / 2 + (x * self.zoom) + self.offset_x
@@ -187,13 +206,19 @@ class MapCanvas(QWidget):
             if len(points) < 3:
                 continue
 
-            is_hovered = region.sector_index == self.hovered_sector_index
-            if is_hovered:
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(QColor(180, 210, 235, 140))
+            if 0 <= region.sector_index < len(self.map.sector_defs):
+                floor_texture = self.map.sector_defs[region.sector_index].floor_texture
             else:
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(QColor(110, 155, 180, 90))
+                floor_texture = ""
+
+            base_brush = self.brush_for_floor_texture(floor_texture)
+
+            is_hovered = region.sector_index == self.hovered_sector_index
+            painter.setPen(Qt.PenStyle.NoPen)
+            if is_hovered:
+                painter.setBrush(QColor(180, 210, 235, 150))
+            else:
+                painter.setBrush(base_brush)
 
             polygon: list[QPointF] = []
             for wx, wy in points:
@@ -201,6 +226,30 @@ class MapCanvas(QWidget):
                 polygon.append(QPointF(sx, sy))
 
             painter.drawPolygon(polygon)
+
+    def brush_for_floor_texture(self, texture_name: str) -> QBrush:
+        key = texture_name.strip().upper()[:8]
+        if not key:
+            return QBrush(QColor(110, 155, 180, 90))
+
+        cached = self.flat_brush_cache.get(key)
+        if cached is not None:
+            return cached
+
+        if self.flat_provider is None:
+            fallback = QBrush(QColor(110, 155, 180, 90))
+            self.flat_brush_cache[key] = fallback
+            return fallback
+
+        image = self.flat_provider(key)
+        if image is None:
+            fallback = QBrush(QColor(110, 155, 180, 90))
+            self.flat_brush_cache[key] = fallback
+            return fallback
+
+        brush = QBrush(QPixmap.fromImage(image))
+        self.flat_brush_cache[key] = brush
+        return brush
 
     def draw_things(self, painter: QPainter) -> None:
         if self.map is None:
@@ -503,6 +552,10 @@ class MapCanvas(QWidget):
                     self.pending_polygon.append(point)
             elif self.mode == EditMode.THING:
                 self.thing_create_requested.emit(point[0], point[1])
+            elif self.mode == EditMode.LINE:
+                linedef_index = self.find_linedef_at(event.position().x(), event.position().y())
+                if linedef_index is not None:
+                    self.linedef_texture_requested.emit(linedef_index)
         self.update()
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:

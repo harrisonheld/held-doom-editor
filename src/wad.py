@@ -61,6 +61,48 @@ class WadArchive:
                 map_names.append(name)
         return map_names
 
+    def get_palette(self) -> list[tuple[int, int, int]] | None:
+        lump_index = self.find_lump_index("PLAYPAL")
+        if lump_index is None:
+            return None
+
+        lump = self.lumps[lump_index]
+        raw = self.data[lump.offset : lump.offset + lump.size]
+        if len(raw) < 256 * 3:
+            return None
+
+        palette: list[tuple[int, int, int]] = []
+        for i in range(256):
+            base = i * 3
+            palette.append((raw[base], raw[base + 1], raw[base + 2]))
+        return palette
+
+    def get_flat_data(self, flat_name: str) -> bytes | None:
+        normalized = flat_name.strip().upper()[:8]
+        if not normalized:
+            return None
+
+        # Flats are usually inside F_START/F_END or FF_START/FF_END blocks.
+        in_flat_block = False
+        for lump in self.lumps:
+            lump_name = lump.name.upper()
+            if lump_name in {"F_START", "FF_START"}:
+                in_flat_block = True
+                continue
+            if lump_name in {"F_END", "FF_END"}:
+                in_flat_block = False
+                continue
+
+            if in_flat_block and lump_name == normalized and lump.size >= 4096:
+                return self.data[lump.offset : lump.offset + 4096]
+
+        # Fallback: some WADs place flat-like lumps outside marker blocks.
+        for lump in self.lumps:
+            if lump.name.upper() == normalized and lump.size >= 4096:
+                return self.data[lump.offset : lump.offset + 4096]
+
+        return None
+
     def list_thing_ids(self, map_name: str | None = None) -> list[int]:
         thing_ids: set[int] = set()
 

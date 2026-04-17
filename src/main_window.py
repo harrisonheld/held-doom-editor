@@ -37,11 +37,13 @@ class MainWindow(QMainWindow):
         self.controls_manager = ControlsManager()
         self.canvas = MapCanvas(self.controls_manager)
         self.editor_service = DoomEditorService()
+        self.canvas.set_flat_provider(self.editor_service.get_flat_image_for_current_game)
         self.actions_by_control_id: dict[str, QAction] = {}
         self.setCentralWidget(self.canvas)
         self.canvas.sector_selected.connect(self.edit_sector)
         self.canvas.thing_selected.connect(self.edit_thing)
         self.canvas.linedef_selected.connect(self.edit_linedef)
+        self.canvas.linedef_texture_requested.connect(self.show_linedef_textures)
         self.canvas.thing_create_requested.connect(self.add_thing_at)
         self.canvas.mode_changed.connect(self.update_mode_status_label)
         self.controls_manager.binding_changed.connect(self.refresh_bound_action)
@@ -453,6 +455,37 @@ class MainWindow(QMainWindow):
         linedef.front_sidedef = front_spin.value()
         linedef.back_sidedef = back_spin.value()
         self.canvas.update()
+
+    def show_linedef_textures(self, linedef_index: int) -> None:
+        if self.canvas.map is None:
+            return
+        if linedef_index < 0 or linedef_index >= len(self.canvas.map.linedefs):
+            return
+
+        linedef = self.canvas.map.linedefs[linedef_index]
+        front_desc = self.format_sidedef_textures(linedef.front_sidedef)
+        back_desc = self.format_sidedef_textures(linedef.back_sidedef)
+
+        QMessageBox.information(
+            self,
+            f"Linedef {linedef_index} Textures",
+            f"Front sidedef ({linedef.front_sidedef}):\n{front_desc}\n\n"
+            f"Back sidedef ({linedef.back_sidedef}):\n{back_desc}",
+        )
+
+    def format_sidedef_textures(self, sidedef_index: int) -> str:
+        if self.canvas.map is None:
+            return "(no map)"
+        if sidedef_index < 0:
+            return "(none)"
+        if sidedef_index >= len(self.canvas.map.sidedefs):
+            return "(invalid sidedef index)"
+
+        sidedef = self.canvas.map.sidedefs[sidedef_index]
+        upper = sidedef.upper_texture or "-"
+        middle = sidedef.middle_texture or "-"
+        lower = sidedef.lower_texture or "-"
+        return f"Upper: {upper}\nMiddle: {middle}\nLower: {lower}"
 
     def update_loaded_status_label(self) -> None:
         wad_name = "(none)"
