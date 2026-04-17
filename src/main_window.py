@@ -1,8 +1,10 @@
+import logging
 from pathlib import Path
 from typing import Callable, Optional
 
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -18,6 +20,11 @@ from PySide6.QtWidgets import (
 from controls_manager import ControlsManager
 from editor_service import DoomEditorService
 from map_canvas import MapCanvas
+from models import Thing
+from thingnames import thing_name_for
+
+
+logger = logging.getLogger(__name__)
 
 
 class MainWindow(QMainWindow):
@@ -35,6 +42,7 @@ class MainWindow(QMainWindow):
         self.canvas.sector_selected.connect(self.edit_sector)
         self.canvas.thing_selected.connect(self.edit_thing)
         self.canvas.linedef_selected.connect(self.edit_linedef)
+        self.canvas.thing_create_requested.connect(self.add_thing_at)
         self.canvas.mode_changed.connect(self.update_mode_status_label)
         self.controls_manager.binding_changed.connect(self.refresh_bound_action)
         self.loaded_status_label = QLabel()
@@ -243,6 +251,132 @@ class MainWindow(QMainWindow):
         thing.angle = angle_spin.value()
         thing.thing_type = type_spin.value()
         thing.flags = flags_spin.value()
+        self.canvas.update()
+
+    def thing_id_choices_from_wad(self) -> tuple[list[int], set[int], set[int]]:
+        thing_ids: set[int] = set()
+        wad_ids: set[int] = set()
+        iwad_ids: set[int] = set()
+
+        if self.canvas.map is not None:
+            map_ids = {thing.thing_type for thing in self.canvas.map.things}
+            thing_ids.update(map_ids)
+            wad_ids.update(map_ids)
+
+        if self.editor_service.has_wad_loaded():
+            try:
+                current_map_ids = set(self.editor_service.list_current_map_thing_ids())
+                all_wad_ids = set(self.editor_service.list_wad_thing_ids())
+                iwad_source_ids = set(self.editor_service.list_iwad_thing_ids_for_current_game())
+                thing_ids.update(current_map_ids)
+                thing_ids.update(all_wad_ids)
+                thing_ids.update(iwad_source_ids)
+                wad_ids.update(current_map_ids)
+                wad_ids.update(all_wad_ids)
+                iwad_ids.update(iwad_source_ids)
+            except Exception:
+                pass
+
+        # Always include Player 1 Start as baseline placement option.
+        thing_ids.add(1)
+        logger.debug(
+            "Thing type choices built: total=%d from_wad=%d from_iwad=%d",
+            len(thing_ids),
+            len(wad_ids),
+            len(iwad_ids),
+        )
+        return sorted(thing_ids), wad_ids, iwad_ids
+
+    def thing_label(self, thing_id: int, *, from_wad: bool, from_iwad: bool) -> str:
+        game_profile = self.editor_service.current_game_profile()
+        known_name = thing_name_for(game_profile, thing_id)
+        if known_name is not None:
+            return f"{thing_id} - {known_name}"
+
+        if from_wad:
+            return f"{thing_id} - ID {thing_id} (present in loaded WAD)"
+        if from_iwad:
+            return f"{thing_id} - ID {thing_id} (present in matching IWAD)"
+        return f"{thing_id} - ID {thing_id}"
+
+    def select_new_thing_settings(self) -> Optional[Thing]:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("New Thing")
+
+        layout = QVBoxLayout(dialog)
+        form_layout = QFormLayout()
+
+        thing_type_combo = QComboBox(dialog)
+        thing_ids, wad_ids, iwad_ids = self.thing_id_choices_from_wad()
+        default_index = 0
+        for index, thing_id in enumerate(thing_ids):
+            if thing_id == 1:
+                default_index = index
+            label = self.thing_label(
+                thing_id,
+                from_wad=thing_id in wad_ids,
+                from_iwad=thing_id in iwad_ids,
+            )
+            thing_type_combo.addItem(label, thing_id)
+        thing_type_combo.setCurrentIndex(default_index)
+        form_layout.addRow("Thing Type", thing_type_combo)
+
+        angle_spin = QSpinBox(dialog)
+        angle_spin.setRange(0, 359)
+        angle_spin.setValue(0)
+        form_layout.addRow("Angle", angle_spin)
+
+        flags_spin = QSpinBox(dialog)
+        flags_spin.setRange(0, 65535)
+        flags_spin.setValue(7)
+        form_layout.addRow("Flags", flags_spin)
+
+        layout.addLayout(form_layout)
+
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+            parent=dialog,
+        )
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        layout.addWidget(button_box)
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            logger.debug("New Thing dialog cancelled")
+            return None
+
+        selected_thing = Thing(
+            x=0,
+            y=0,
+            angle=angle_spin.value(),
+            thing_type=int(thing_type_combo.currentData()),
+            flags=flags_spin.value(),
+        )
+        logger.info(
+            "New Thing settings chosen: type=%d angle=%d flags=%d",
+            selected_thing.thing_type,
+            selected_thing.angle,
+            selected_thing.flags,
+        )
+        return selected_thing
+
+    def add_thing_at(self, x: int, y: int) -> None:
+        settings = self.select_new_thing_settings()
+        if settings is None:
+            return
+
+        doom_map = self.canvas.ensure_map()
+        settings.x = x
+        settings.y = y
+        doom_map.things.append(settings)
+        logger.info(
+            "Created Thing at (%d, %d): type=%d angle=%d flags=%d",
+            settings.x,
+            settings.y,
+            settings.thing_type,
+            settings.angle,
+            settings.flags,
+        )
         self.canvas.update()
 
     def edit_linedef(self, linedef_index: int) -> None:

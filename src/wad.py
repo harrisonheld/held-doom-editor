@@ -1,8 +1,13 @@
+import logging
 import struct
 from collections import defaultdict
 from dataclasses import dataclass
+from pathlib import Path
 
 from models import DoomMap, Linedef, LumpEntry, SectorDef, SectorRegion, Sidedef, Thing, Vertex
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -19,6 +24,7 @@ class WadArchive:
         self.load()
 
     def load(self) -> None:
+        logger.info("Loading WAD: %s", str(Path(self.filename).resolve()))
         with open(self.filename, "rb") as file_handle:
             self.data = file_handle.read()
 
@@ -35,6 +41,12 @@ class WadArchive:
             name = lump_name.rstrip(b"\0").decode("ascii", errors="ignore")
             self.lumps.append(LumpEntry(name=name, offset=lump_offset, size=lump_size))
 
+        logger.info(
+            "Loaded WAD %s with %d lumps",
+            str(Path(self.filename).resolve()),
+            len(self.lumps),
+        )
+
     def find_lump_index(self, lump_name: str) -> int | None:
         for index, lump in enumerate(self.lumps):
             if lump.name == lump_name:
@@ -48,6 +60,54 @@ class WadArchive:
             if (len(name) == 4 and name.startswith("E")) or name.startswith("MAP"):
                 map_names.append(name)
         return map_names
+
+    def list_thing_ids(self, map_name: str | None = None) -> list[int]:
+        thing_ids: set[int] = set()
+
+        if map_name is not None:
+            lump = self._get_map_child_lump(map_name, "THINGS")
+            if lump is None:
+                logger.debug("No THINGS lump found for map %s in %s", map_name, self.filename)
+                return []
+            thing_ids.update(self._extract_thing_ids_from_lump(lump))
+            logger.debug(
+                "Extracted %d Thing IDs from map %s in %s",
+                len(thing_ids),
+                map_name,
+                self.filename,
+            )
+            return sorted(thing_ids)
+
+        for candidate_map in self.list_map_names():
+            lump = self._get_map_child_lump(candidate_map, "THINGS")
+            if lump is None:
+                continue
+            thing_ids.update(self._extract_thing_ids_from_lump(lump))
+
+        logger.debug("Extracted %d unique Thing IDs from WAD %s", len(thing_ids), self.filename)
+
+        return sorted(thing_ids)
+
+    def _get_map_child_lump(self, map_name: str, child_name: str) -> LumpEntry | None:
+        map_index = self.find_lump_index(map_name)
+        if map_index is None:
+            return None
+
+        for lump_index in range(map_index + 1, min(map_index + 12, len(self.lumps))):
+            lump = self.lumps[lump_index]
+            if lump.name == child_name:
+                return lump
+        return None
+
+    def _extract_thing_ids_from_lump(self, lump: LumpEntry) -> set[int]:
+        result: set[int] = set()
+        raw = self.data[lump.offset : lump.offset + lump.size]
+        for i in range(0, len(raw), 10):
+            if i + 10 > len(raw):
+                break
+            _, _, _, thing_type, _ = struct.unpack("<hhhhh", raw[i : i + 10])
+            result.add(int(thing_type))
+        return result
 
     def get_map_doom_map(self, map_name: str) -> DoomMap:
         parser = DoomMapParser(self)

@@ -20,6 +20,7 @@ class MapCanvas(QWidget):
     sector_selected = Signal(int)
     thing_selected = Signal(int)
     linedef_selected = Signal(int)
+    thing_create_requested = Signal(int, int)
     mode_changed = Signal(str)
 
     def __init__(self, controls_manager: ControlsManager) -> None:
@@ -497,8 +498,11 @@ class MapCanvas(QWidget):
 
         if self.controls_manager.matches_mouse("sector_draw_click", event.button()):
             point = self.nearest_grid_point(event.position().x(), event.position().y())
-            if not self.try_close_sector(point):
-                self.pending_polygon.append(point)
+            if self.mode == EditMode.SECTOR:
+                if not self.try_close_sector(point):
+                    self.pending_polygon.append(point)
+            elif self.mode == EditMode.THING:
+                self.thing_create_requested.emit(point[0], point[1])
         self.update()
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
