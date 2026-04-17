@@ -103,6 +103,31 @@ class WadArchive:
 
         return None
 
+    def list_flat_names(self) -> list[str]:
+        flat_names: set[str] = set()
+
+        in_flat_block = False
+        for lump in self.lumps:
+            lump_name = lump.name.upper()
+            if lump_name in {"F_START", "FF_START"}:
+                in_flat_block = True
+                continue
+            if lump_name in {"F_END", "FF_END"}:
+                in_flat_block = False
+                continue
+
+            if in_flat_block and lump.size >= 4096:
+                flat_names.add(lump_name[:8])
+
+        # Fallback for WADs that omit flat markers.
+        if not flat_names:
+            for lump in self.lumps:
+                lump_name = lump.name.upper()
+                if lump.size >= 4096 and 1 <= len(lump_name) <= 8 and lump_name.isascii():
+                    flat_names.add(lump_name)
+
+        return sorted(flat_names)
+
     def list_thing_ids(self, map_name: str | None = None) -> list[int]:
         thing_ids: set[int] = set()
 

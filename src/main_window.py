@@ -2,19 +2,23 @@ import logging
 from pathlib import Path
 from typing import Callable, Optional
 
-from PySide6.QtGui import QAction
+from PySide6.QtGui import QAction, QPixmap
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
     QFormLayout,
+    QHBoxLayout,
     QInputDialog,
     QLabel,
     QLineEdit,
+    QListWidget,
     QMainWindow,
     QMessageBox,
+    QPushButton,
     QSpinBox,
+    QWidget,
     QVBoxLayout,
 )
 
@@ -177,11 +181,23 @@ class MainWindow(QMainWindow):
         tag_spin.setValue(sector_def.tag)
         form_layout.addRow("Tag", tag_spin)
 
-        floor_flat_edit = QLineEdit(sector_def.floor_texture, dialog)
-        form_layout.addRow("Floor Flat", floor_flat_edit)
-
-        ceiling_flat_edit = QLineEdit(sector_def.ceiling_texture, dialog)
-        form_layout.addRow("Ceiling Flat", ceiling_flat_edit)
+        flat_names = self.editor_service.list_flat_names_for_current_game()
+        floor_flat_edit = self.add_texture_field(
+            form_layout,
+            dialog,
+            label="Floor Flat",
+            initial_value=sector_def.floor_texture,
+            browser_names=flat_names,
+            browser_title="Browse Floor Flats",
+        )
+        ceiling_flat_edit = self.add_texture_field(
+            form_layout,
+            dialog,
+            label="Ceiling Flat",
+            initial_value=sector_def.ceiling_texture,
+            browser_names=flat_names,
+            browser_title="Browse Ceiling Flats",
+        )
 
         layout.addLayout(form_layout)
 
@@ -449,23 +465,55 @@ class MainWindow(QMainWindow):
         back_spin.setValue(min(max(back_index, -1), sidedef_max))
         form_layout.addRow("Back Sidedef", back_spin)
 
-        front_upper_edit = QLineEdit(front_sidedef.upper_texture, dialog)
-        form_layout.addRow("Front Upper Texture", front_upper_edit)
-
-        front_middle_edit = QLineEdit(front_sidedef.middle_texture, dialog)
-        form_layout.addRow("Front Middle Texture", front_middle_edit)
-
-        front_lower_edit = QLineEdit(front_sidedef.lower_texture, dialog)
-        form_layout.addRow("Front Lower Texture", front_lower_edit)
-
-        back_upper_edit = QLineEdit(back_sidedef.upper_texture, dialog)
-        form_layout.addRow("Back Upper Texture", back_upper_edit)
-
-        back_middle_edit = QLineEdit(back_sidedef.middle_texture, dialog)
-        form_layout.addRow("Back Middle Texture", back_middle_edit)
-
-        back_lower_edit = QLineEdit(back_sidedef.lower_texture, dialog)
-        form_layout.addRow("Back Lower Texture", back_lower_edit)
+        texture_names = self.texture_browser_names_for_linedef()
+        front_upper_edit = self.add_texture_field(
+            form_layout,
+            dialog,
+            label="Front Upper Texture",
+            initial_value=front_sidedef.upper_texture,
+            browser_names=texture_names,
+            browser_title="Browse Front Upper",
+        )
+        front_middle_edit = self.add_texture_field(
+            form_layout,
+            dialog,
+            label="Front Middle Texture",
+            initial_value=front_sidedef.middle_texture,
+            browser_names=texture_names,
+            browser_title="Browse Front Middle",
+        )
+        front_lower_edit = self.add_texture_field(
+            form_layout,
+            dialog,
+            label="Front Lower Texture",
+            initial_value=front_sidedef.lower_texture,
+            browser_names=texture_names,
+            browser_title="Browse Front Lower",
+        )
+        back_upper_edit = self.add_texture_field(
+            form_layout,
+            dialog,
+            label="Back Upper Texture",
+            initial_value=back_sidedef.upper_texture,
+            browser_names=texture_names,
+            browser_title="Browse Back Upper",
+        )
+        back_middle_edit = self.add_texture_field(
+            form_layout,
+            dialog,
+            label="Back Middle Texture",
+            initial_value=back_sidedef.middle_texture,
+            browser_names=texture_names,
+            browser_title="Browse Back Middle",
+        )
+        back_lower_edit = self.add_texture_field(
+            form_layout,
+            dialog,
+            label="Back Lower Texture",
+            initial_value=back_sidedef.lower_texture,
+            browser_names=texture_names,
+            browser_title="Browse Back Lower",
+        )
 
         layout.addLayout(form_layout)
 
@@ -506,6 +554,122 @@ class MainWindow(QMainWindow):
         if not normalized:
             return "-"
         return normalized[:8]
+
+    def texture_browser_names_for_linedef(self) -> list[str]:
+        names: set[str] = set(self.editor_service.list_flat_names_for_current_game())
+        if self.canvas.map is not None:
+            for sidedef in self.canvas.map.sidedefs:
+                for tex in (sidedef.upper_texture, sidedef.middle_texture, sidedef.lower_texture):
+                    normalized = self.normalize_texture_name(tex)
+                    if normalized != "-":
+                        names.add(normalized)
+        return sorted(names)
+
+    def add_texture_field(
+        self,
+        form_layout: QFormLayout,
+        parent: QWidget,
+        *,
+        label: str,
+        initial_value: str,
+        browser_names: list[str],
+        browser_title: str,
+    ) -> QLineEdit:
+        line_edit = QLineEdit(initial_value, parent)
+        preview = QLabel(parent)
+        preview.setFixedSize(64, 64)
+        preview.setScaledContents(True)
+        browse_button = QPushButton("Browse", parent)
+
+        row_widget = QWidget(parent)
+        row_layout = QHBoxLayout(row_widget)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.addWidget(line_edit)
+        row_layout.addWidget(preview)
+        row_layout.addWidget(browse_button)
+        form_layout.addRow(label, row_widget)
+
+        self.update_texture_preview(preview, line_edit.text())
+        line_edit.textChanged.connect(
+            lambda text, p=preview: self.update_texture_preview(p, text)
+        )
+        browse_button.clicked.connect(
+            lambda _checked=False, edit=line_edit, names=browser_names, title=browser_title:
+            self.browse_texture_name(edit, names, title)
+        )
+        return line_edit
+
+    def update_texture_preview(self, preview: QLabel, texture_name: str) -> None:
+        normalized = self.normalize_texture_name(texture_name)
+        image = self.editor_service.get_flat_image_for_current_game(normalized)
+        if image is None:
+            preview.setText("N/A")
+            preview.setStyleSheet("QLabel { background: #222; color: #bbb; border: 1px solid #555; }")
+            preview.clear()
+            return
+
+        preview.setStyleSheet("QLabel { border: 1px solid #555; }")
+        preview.setText("")
+        preview.setPixmap(QPixmap.fromImage(image).scaled(64, 64))
+
+    def browse_texture_name(
+        self,
+        target_edit: QLineEdit,
+        names: list[str],
+        title: str,
+    ) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle(title)
+        layout = QVBoxLayout(dialog)
+
+        texture_list = QListWidget(dialog)
+        texture_list.addItems(names)
+        layout.addWidget(texture_list)
+
+        preview = QLabel(dialog)
+        preview.setFixedSize(128, 128)
+        preview.setScaledContents(True)
+        preview.setStyleSheet("QLabel { border: 1px solid #555; background: #222; color: #bbb; }")
+        layout.addWidget(preview)
+
+        current_name = self.normalize_texture_name(target_edit.text())
+        for i in range(texture_list.count()):
+            if texture_list.item(i).text() == current_name:
+                texture_list.setCurrentRow(i)
+                break
+
+        def refresh_preview() -> None:
+            item = texture_list.currentItem()
+            if item is None:
+                preview.setText("N/A")
+                preview.clear()
+                return
+            image = self.editor_service.get_flat_image_for_current_game(item.text())
+            if image is None:
+                preview.setText("N/A")
+                preview.clear()
+            else:
+                preview.setText("")
+                preview.setPixmap(QPixmap.fromImage(image).scaled(128, 128))
+
+        texture_list.currentItemChanged.connect(lambda _current, _previous: refresh_preview())
+        refresh_preview()
+
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+            parent=dialog,
+        )
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        layout.addWidget(button_box)
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        selected = texture_list.currentItem()
+        if selected is None:
+            return
+        target_edit.setText(selected.text())
 
     def ensure_linedef_sidedef(self, linedef: Linedef, *, is_front: bool) -> int:
         if self.canvas.map is None:

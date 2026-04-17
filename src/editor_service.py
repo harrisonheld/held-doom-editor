@@ -137,6 +137,27 @@ class DoomEditorService:
 
         return self._flat_to_image(flat_data, palette)
 
+    def list_flat_names_for_current_game(self) -> list[str]:
+        names: set[str] = set()
+        sources: list[WadArchive] = []
+
+        if self.current_wad is not None:
+            sources.append(self.current_wad)
+
+        game = self.current_game_profile()
+        if game is not None and game in self.iwads:
+            sources.append(self.iwads[game])
+
+        for key in sorted(self.iwads.keys()):
+            archive = self.iwads[key]
+            if archive not in sources:
+                sources.append(archive)
+
+        for source in sources:
+            names.update(source.list_flat_names())
+
+        return sorted(names)
+
     def _flat_to_image(
         self,
         flat_data: bytes,
