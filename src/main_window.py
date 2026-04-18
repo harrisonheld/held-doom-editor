@@ -2,8 +2,11 @@ import logging
 from pathlib import Path
 from typing import Callable, Optional
 
+from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QAction, QPixmap
 from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -14,6 +17,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMessageBox,
     QPushButton,
@@ -85,6 +89,10 @@ class MainWindow(QMainWindow):
 
     def build_menu(self) -> None:
         file_menu = self.menuBar().addMenu("File")
+
+        new_map_action = QAction("New Map...", self)
+        new_map_action.triggered.connect(self.new_map)
+        file_menu.addAction(new_map_action)
 
         open_action = self.create_bound_action("open_wad", self.open_wad)
         file_menu.addAction(open_action)
@@ -594,8 +602,7 @@ class MainWindow(QMainWindow):
             lambda text, p=preview: self.update_texture_preview(p, text)
         )
         browse_button.clicked.connect(
-            lambda _checked=False, edit=line_edit, names=browser_names, title=browser_title:
-            self.browse_texture_name(edit, names, title)
+            lambda _checked=False, edit=line_edit, names=browser_names, title=browser_title: self.browse_texture_name(edit, names, title)
         )
         return line_edit
 
@@ -618,13 +625,45 @@ class MainWindow(QMainWindow):
         names: list[str],
         title: str,
     ) -> None:
+        flat_entries = self.editor_service.list_flat_entries_for_current_game()
+        source_by_name: dict[str, list[str]] = {}
+        for flat_name, source in flat_entries:
+            source_by_name.setdefault(flat_name, []).append(source)
+
         dialog = QDialog(self)
         dialog.setWindowTitle(title)
+        dialog.resize(760, 560)
         layout = QVBoxLayout(dialog)
 
         texture_list = QListWidget(dialog)
-        texture_list.addItems(names)
+        texture_list.setViewMode(QListWidget.ViewMode.IconMode)
+        texture_list.setMovement(QListWidget.Movement.Static)
+        texture_list.setResizeMode(QListWidget.ResizeMode.Adjust)
+        texture_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        texture_list.setWrapping(True)
+        texture_list.setIconSize(QSize(64, 64))
+        texture_list.setGridSize(QSize(130, 96))
+        texture_list.setWordWrap(True)
+        texture_list.setUniformItemSizes(True)
+        for name in names:
+            image = self.editor_service.get_flat_image_for_current_game(name)
+            if image is not None:
+                pixmap = QPixmap.fromImage(image).scaled(64, 64)
+            else:
+                pixmap = QPixmap(64, 64)
+                pixmap.fill(Qt.GlobalColor.black)
+
+            item = QListWidgetItem(name)
+            item.setData(Qt.ItemDataRole.UserRole, name)
+            item.setIcon(pixmap)
+            item.setToolTip(name)
+            texture_list.addItem(item)
         layout.addWidget(texture_list)
+
+        info_label = QLabel(dialog)
+        info_label.setWordWrap(True)
+        info_label.setStyleSheet("QLabel { color: #ddd; background: #1f1f1f; border: 1px solid #555; padding: 6px; }")
+        layout.addWidget(info_label)
 
         preview = QLabel(dialog)
         preview.setFixedSize(128, 128)
@@ -634,7 +673,8 @@ class MainWindow(QMainWindow):
 
         current_name = self.normalize_texture_name(target_edit.text())
         for i in range(texture_list.count()):
-            if texture_list.item(i).text() == current_name:
+            item_name = str(texture_list.item(i).data(Qt.ItemDataRole.UserRole))
+            if item_name == current_name:
                 texture_list.setCurrentRow(i)
                 break
 
@@ -643,14 +683,23 @@ class MainWindow(QMainWindow):
             if item is None:
                 preview.setText("N/A")
                 preview.clear()
+                info_label.setText("Source: unknown\nDimensions: N/A")
                 return
-            image = self.editor_service.get_flat_image_for_current_game(item.text())
+
+            selected_name = str(item.data(Qt.ItemDataRole.UserRole))
+            image = self.editor_service.get_flat_image_for_current_game(selected_name)
+            sources = source_by_name.get(selected_name, ["unknown"])
+            source_text = ", ".join(sources)
             if image is None:
                 preview.setText("N/A")
                 preview.clear()
+                info_label.setText(f"Source: {source_text}\nDimensions: N/A")
             else:
                 preview.setText("")
                 preview.setPixmap(QPixmap.fromImage(image).scaled(128, 128))
+                info_label.setText(
+                    f"Source: {source_text}\nDimensions: {image.width()}x{image.height()}"
+                )
 
         texture_list.currentItemChanged.connect(lambda _current, _previous: refresh_preview())
         refresh_preview()
@@ -669,7 +718,65 @@ class MainWindow(QMainWindow):
         selected = texture_list.currentItem()
         if selected is None:
             return
-        target_edit.setText(selected.text())
+        target_edit.setText(str(selected.data(Qt.ItemDataRole.UserRole)))
+
+    def new_map(self) -> None:
+        self.editor_service.refresh_iwads()
+        iwad_paths = self.editor_service.available_iwads()
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("New Map")
+        layout = QVBoxLayout(dialog)
+        form_layout = QFormLayout()
+
+        map_name_edit = QLineEdit("MAP01", dialog)
+        form_layout.addRow("Map Name", map_name_edit)
+
+        game_combo = QComboBox(dialog)
+        game_combo.addItem("Doom (E#M#)", "doom1")
+        game_combo.addItem("Doom II (MAP##)", "doom2")
+        form_layout.addRow("Game Profile", game_combo)
+
+        doom1_checkbox = QCheckBox(
+            f"Include DOOM.WAD ({Path(iwad_paths.get('doom1', 'not found')).name})",
+            dialog,
+        )
+        doom1_checkbox.setChecked("doom1" in iwad_paths)
+        doom1_checkbox.setEnabled("doom1" in iwad_paths)
+        form_layout.addRow("IWAD", doom1_checkbox)
+
+        doom2_checkbox = QCheckBox(
+            f"Include DOOM2.WAD ({Path(iwad_paths.get('doom2', 'not found')).name})",
+            dialog,
+        )
+        doom2_checkbox.setChecked("doom2" in iwad_paths)
+        doom2_checkbox.setEnabled("doom2" in iwad_paths)
+        form_layout.addRow("IWAD", doom2_checkbox)
+
+        layout.addLayout(form_layout)
+
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+            parent=dialog,
+        )
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        layout.addWidget(button_box)
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        map_name = map_name_edit.text().strip().upper() or "MAP01"
+        game_profile = str(game_combo.currentData())
+        included_iwads: list[str] = []
+        if doom1_checkbox.isChecked() and "doom1" in iwad_paths:
+            included_iwads.append("doom1")
+        if doom2_checkbox.isChecked() and "doom2" in iwad_paths:
+            included_iwads.append("doom2")
+
+        doom_map = self.editor_service.create_new_map(map_name, game_profile, included_iwads)
+        self.canvas.set_map(doom_map)
+        self.update_loaded_status_label()
 
     def ensure_linedef_sidedef(self, linedef: Linedef, *, is_front: bool) -> int:
         if self.canvas.map is None:
@@ -783,14 +890,14 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Error", str(exc))
 
     def save_wad_as(self) -> None:
-        if not self.editor_service.has_wad_loaded():
-            QMessageBox.critical(self, "Error", "No WAD is loaded")
-            return
+        default_name = self.editor_service.current_wad_filename or ""
+        if not default_name and self.editor_service.current_map_name:
+            default_name = f"{self.editor_service.current_map_name}.wad"
 
         filename, _ = QFileDialog.getSaveFileName(
             self,
             "Save WAD As",
-            self.editor_service.current_wad_filename or "",
+            default_name,
             "WAD Files (*.wad)",
         )
         if not filename:

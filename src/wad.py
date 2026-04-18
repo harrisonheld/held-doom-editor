@@ -379,6 +379,23 @@ class WadWriter:
         self._write_wad_file(output_filename, written_lumps)
         return output_filename
 
+    @classmethod
+    def create_new_pwad(cls, map_name: str, doom_map: DoomMap, filename: str) -> str:
+        temp_archive = WadArchive.__new__(WadArchive)
+        temp_archive.filename = filename
+        temp_archive.lumps = []
+        temp_archive.data = b"PWAD"
+
+        writer = cls(temp_archive)
+        map_lumps = writer._build_map_lumps(doom_map)
+        marker_name = map_name.strip().upper()[:8] or "MAP01"
+        lumps: list[tuple[str, bytes]] = [(marker_name, b"")]
+        for lump_name in cls.MAP_LUMP_ORDER:
+            lumps.append((lump_name, map_lumps[lump_name]))
+
+        writer._write_wad_file(filename, lumps)
+        return filename
+
     def _build_map_lumps(self, doom_map: DoomMap) -> dict[str, bytes]:
         return {
             "THINGS": self._serialize_things(doom_map),
